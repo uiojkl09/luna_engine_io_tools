@@ -474,7 +474,7 @@ def _selected_model_subset_ids(context, arm, assign_missing=True):
         resolve_subset_index_collisions(arm)
     used_ids = set()
     for obj in bpy.data.objects:
-        if obj.parent != arm or obj.type != 'MESH' or obj.get("engine_bounds_type", "") == "subset_aabb":
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         try:
             subset_id = int(obj.get("engine_subset_index", -1))
@@ -509,7 +509,7 @@ def _selected_model_subset_ids(context, arm, assign_missing=True):
             add_selected_obj(obj)
 
     for obj in selected_objs:
-        if obj.parent != arm or obj.type != 'MESH' or obj.get("engine_bounds_type", "") == "subset_aabb":
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         try:
             subset_id = int(obj.get("engine_subset_index", -1))

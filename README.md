@@ -44,6 +44,11 @@ You can also copy the `luna_engine_io_tools` folder into Blender's add-ons direc
 3. Use **File > Export > Luna Engine Model** or the **Export Luna Engine Model** operator.
 4. Save the exported `.model` file.
 
+New meshes can be parented to the imported rig or connected through an Armature
+modifier. Export registers meshes without a saved subset ID in the active Model
+Look, so joining them to an original mesh is unnecessary. Use the Model Looks
+panel to change which meshes belong to each look.
+
 ### Importing animations
 
 1. Select the target armature or camera.
@@ -111,6 +116,8 @@ Clip replacement regression:
 `blender -b --factory-startup --python tests/blender_morph_clip_replacement.py`.
 Export edge cases:
 `blender -b --factory-startup --python tests/blender_animation_export_edges.py`.
+Custom mesh model export:
+`blender -b --factory-startup --python tests/blender_custom_model_export.py`.
 These tests generate their own data and require no game assets or rendering.
 
 ## License

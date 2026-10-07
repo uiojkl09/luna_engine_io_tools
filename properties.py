@@ -288,9 +288,7 @@ def update_lod_visibility(self, context):
         active_lod = 0
     visible_subset_ids = _model_visible_subset_ids(armature, active_lod)
     for obj in bpy.data.objects:
-        if obj.parent == armature and obj.type == 'MESH':
-            if obj.get("engine_bounds_type", "") == "subset_aabb":
-                continue
+        if is_model_mesh_for_armature(obj, armature):
             if visible_subset_ids is not None:
                 try:
                     visible = int(obj.get("engine_subset_index", -1)) in visible_subset_ids
@@ -333,9 +331,7 @@ def _model_visible_subset_ids(armature, lod_index):
         return {
             int(obj.get("engine_subset_index", -1))
             for obj in bpy.data.objects
-            if obj.parent == armature
-            and obj.type == 'MESH'
-            and obj.get("engine_bounds_type", "") != "subset_aabb"
+            if is_model_mesh_for_armature(obj, armature)
             and int(obj.get("engine_subset_index", -1)) >= 0
         }
 

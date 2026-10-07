@@ -295,6 +295,14 @@ def _hex32(value):
     # Safe 32-bit hex formatter for signed/unsigned Blender IDProps
     return f"0x{(int(value) & U32_MASK):08X}"
 
+def is_model_mesh_for_armature(obj, arm):
+    if (getattr(obj, "type", None) != 'MESH'
+            or obj.get("engine_bounds_type", "") == "subset_aabb"
+            or obj.get("engine_hair_curve_object", "")):
+        return False
+    return obj.parent == arm or any(
+        mod.type == 'ARMATURE' and mod.object == arm for mod in obj.modifiers)
+
 def _resolve_anim_armature(context):
     candidates = []
     for attr in ("object", "active_object"):
@@ -312,6 +320,12 @@ def _resolve_anim_armature(context):
         parent = getattr(obj, "parent", None)
         if parent and getattr(parent, "type", None) == 'ARMATURE':
             return parent
+    for obj in candidates:
+        if getattr(obj, "type", None) == 'MESH':
+            arms = {mod.object for mod in obj.modifiers
+                    if mod.type == 'ARMATURE' and mod.object is not None}
+            if len(arms) == 1:
+                return arms.pop()
     for obj in candidates:
         if getattr(obj, "type", None) != 'EMPTY':
             continue
@@ -345,7 +359,7 @@ def resolve_subset_index_collisions(arm):
     used_ids = set()
     duplicates = []    # objects that need reassignment
     for obj in bpy.data.objects:
-        if obj.parent != arm or obj.type != 'MESH' or obj.get("engine_bounds_type", "") == "subset_aabb":
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         try:
             subset_id = int(obj.get("engine_subset_index", -1))
@@ -374,7 +388,7 @@ def model_mesh_subset_ids(arm, resolve_collisions=True):
         resolve_subset_index_collisions(arm)
     ids = []
     for obj in bpy.data.objects:
-        if obj.parent != arm or obj.type != 'MESH' or obj.get("engine_bounds_type", "") == "subset_aabb":
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         try:
             subset_id = int(obj.get("engine_subset_index", -1))

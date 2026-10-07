@@ -2266,6 +2266,43 @@ def _json_list_from_idprop(owner, key):
         return []
     return data if isinstance(data, list) else []
 
+def _register_new_model_meshes(arm, mesh_objects, template):
+    """Give new mesh objects stable IDs and add them to the active model look."""
+    source_count = len(template.payload(BLOCK_HASHES["ModelSubset"])) // MODEL_SUBSET_RECORD_SIZE
+    used_ids = set(model_mesh_subset_ids(arm, resolve_collisions=False))
+    next_id = max(source_count, max(used_ids, default=-1) + 1)
+    new_ids = []
+    for obj in mesh_objects:
+        try:
+            subset_id = int(obj.get("engine_subset_index", -1))
+        except (TypeError, ValueError):
+            subset_id = -1
+        if subset_id < 0:
+            obj["engine_subset_index"] = next_id
+            obj["engine_lod_mask"] = 1
+            new_ids.append(next_id)
+            next_id += 1
+    if not new_ids:
+        return
+    sanitize_model_look_metadata(arm, mark_modified=True)
+    looks = _json_list_from_idprop(arm, "engine_model_looks_json")
+    if not looks:
+        looks = _parse_model_looks_metadata(template.data, template.blocks)
+    if not looks:
+        looks = [{"index": 0, "name": "default", "subset_ids": []}]
+    try:
+        active_look = int(getattr(arm, "engine_model_active_look", "0"))
+    except (TypeError, ValueError):
+        active_look = 0
+    look = looks[max(0, min(active_look, len(looks) - 1))]
+    subset_ids, _ = _unique_ints(look.get("subset_ids", []))
+    subset_ids.extend(new_ids)
+    look["subset_ids"] = subset_ids
+    look["lods"] = [{"start": 0, "count": len(subset_ids)} for _ in range(8)]
+    _write_model_json_list(arm, "engine_model_looks_json", looks)
+    arm["engine_model_looks_modified"] = True
+    update_lod_visibility(arm, bpy.context)
+
 
 def _mapped_subset_ids(source_ids, subset_index_map, subset_count, allow_direct=False):
     result = []
@@ -3173,10 +3210,10 @@ class ExportEngineModel(Operator, ExportHelper):
 
         mesh_objects = [
             obj for obj in bpy.data.objects
-            if getattr(obj, "type", None) == "MESH" and getattr(obj, "parent", None) == arm
-            and obj.get("engine_bounds_type", "") != "subset_aabb"
+            if is_model_mesh_for_armature(obj, arm)
         ]
         resolve_subset_index_collisions(arm)
+        _register_new_model_meshes(arm, mesh_objects, template)
         sanitize_model_look_metadata(arm, mark_modified=True)
 
         def subset_sort_key(obj):
@@ -3187,8 +3224,8 @@ class ExportEngineModel(Operator, ExportHelper):
         if not mesh_objects:
             self.report(
                 {'ERROR'},
-                "No model meshes were found under the selected skeleton. Parent at least one mesh directly "
-                "to the Armature, then export again.",
+                "No model meshes were found for the selected skeleton. Parent a mesh to the Armature or "
+                "connect it with an Armature modifier, then export again.",
             )
             return {'CANCELLED'}
 

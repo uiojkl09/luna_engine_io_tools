@@ -226,7 +226,7 @@ def _draw_model_foldout(layout, target, prop_name, label):
 def _model_mesh_names_by_subset(arm):
     names = {}
     for obj in bpy.data.objects:
-        if obj.parent != arm or obj.type != 'MESH' or obj.get("engine_bounds_type", "") == "subset_aabb":
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         try:
             subset_id = int(obj.get("engine_subset_index", -1))
@@ -316,11 +316,7 @@ def _draw_model_source_panel(layout, arm):
 
 def _model_has_shape_keys(arm):
     for obj in bpy.data.objects:
-        if (
-            getattr(obj, "type", None) != 'MESH'
-            or getattr(obj, "parent", None) != arm
-            or obj.get("engine_bounds_type", "") == "subset_aabb"
-        ):
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
         if len(list(getattr(shape_keys, "key_blocks", []) or [])) > 1:
@@ -485,7 +481,7 @@ def _draw_model_look_panel(layout, context, arm):
             visible_ids = None
         total = sum(
             1 for obj in bpy.data.objects
-            if obj.parent == arm and obj.type == 'MESH' and obj.get("engine_bounds_type", "") != "subset_aabb"
+            if is_model_mesh_for_armature(obj, arm)
         )
         if visible_ids is not None:
             look_box.label(text=f"Visible: {len(visible_ids)} / {total}")
@@ -493,9 +489,7 @@ def _draw_model_look_panel(layout, context, arm):
 
 def _draw_model_selection_panel(layout, context, arm):
     obj = getattr(context, "active_object", None)
-    if not obj or getattr(obj, "parent", None) != arm or getattr(obj, "type", None) != 'MESH':
-        return
-    if obj.get("engine_bounds_type", "") == "subset_aabb":
+    if not obj or not is_model_mesh_for_armature(obj, arm):
         return
     box = layout.box()
     box.label(text="Subset")
