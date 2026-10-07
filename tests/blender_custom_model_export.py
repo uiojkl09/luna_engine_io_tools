@@ -143,6 +143,50 @@ def run_case(template, output, parent, remove_original, exclude=False):
     print('CUSTOM_MODEL_EXPORT_PASS', json.dumps({'parented': parent, 'replace': remove_original, 'excluded': exclude}))
 
 
+def run_controls_case(template, output, parent):
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    assert bpy.ops.import_scene.engine_model(filepath=str(template)) == {'FINISHED'}
+    arm = bpy.context.active_object
+    source_mesh = next(o for o in bpy.data.objects if o.type == 'MESH')
+    source_mesh.shape_key_add(name='Basis')
+    shape = source_mesh.shape_key_add(name='Squash')
+    for point in shape.data:
+        point.co.x *= .5
+    assert bpy.ops.export_scene.engine_model(filepath=str(output)) == {'FINISHED'}
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    assert bpy.ops.import_scene.engine_model(filepath=str(output)) == {'FINISHED'}
+    arm = bpy.context.active_object
+    for obj in list(bpy.data.objects):
+        if obj.type == 'MESH':
+            bpy.data.objects.remove(obj, do_unlink=True)
+    custom = new_mesh(arm, 'Custom Shapes', POINTS, [(0, 1, 2)], parent)
+    helpers = []
+    for name, prop, value in (
+        ('Bounds', 'engine_bounds_type', 'subset_aabb'),
+        ('Hair Guide', 'engine_hair_curve_object', 'Hair Owner'),
+    ):
+        helper = new_mesh(arm, name, POINTS[:3], [(0, 1, 2)], parent)
+        helper[prop] = value
+        helper.shape_key_add(name='Basis')
+        helper.shape_key_add(name='Squash').value = .25
+        helpers.append(helper)
+    active(custom)
+    assert bpy.ops.model.create_original_blendshape_names() == {'FINISHED'}
+    assert custom.parent == (arm if parent else None)
+    assert custom.data.shape_keys.key_blocks.get('Squash') is not None
+    controls = json.loads(arm['engine_model_morph_controls_json'])
+    assert len(controls) == 1 and controls[0]['mesh_count'] == 1, controls
+    preview = arm.engine_model_morph_previews[controls[0]['preview_index']]
+    preview.value = .75
+    assert custom.data.shape_keys.key_blocks['Squash'].value == .75
+    for helper in helpers:
+        assert helper.data.shape_keys.key_blocks['Squash'].value == .25, (helper.name, dict(helper.items()), helper.data.shape_keys.key_blocks['Squash'].value)
+    assert bpy.ops.model.sync_morph_controls() == {'FINISHED'}
+    assert custom.data.shape_keys.key_blocks['Squash'].value == .75
+    assert reg.operators._ziva_selected_meshes(bpy.context, arm) == [custom]
+    print('CUSTOM_MORPH_CONTROLS_PASS', json.dumps({'parented': parent}))
+
+
 with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     template = tmp / 'template.model'
@@ -151,4 +195,6 @@ with tempfile.TemporaryDirectory() as tmp:
         for replace in (False, True):
             run_case(template, tmp / 'custom.model', parent, replace)
     run_case(template, tmp / 'excluded.model', False, False, exclude=True)
+    for parent in (False, True):
+        run_controls_case(template, tmp / 'morph_source.model', parent)
 print('CUSTOM_MODEL_EXPORT_REGRESSION_PASS')

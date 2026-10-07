@@ -92,7 +92,7 @@ class MODEL_OT_export_with_model_settings(Operator):
 class MODEL_OT_sync_morph_controls(Operator):
     bl_idname = "model.sync_morph_controls"
     bl_label = "Refresh Deformation Controls"
-    bl_description = "Connect same-named registered shape keys on every model subset to shared root-armature sliders"
+    bl_description = "Refresh shared shape-key preview sliders for meshes using this armature"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -129,8 +129,8 @@ def _original_model_blendshape_channels(arm):
                 "driver_status": "AUTOMATIC_MORPH",
             })
 
-    ziva_model = load_ziva_model(source_path)
-    if ziva_model is not None:
+    if BLOCK_HASHES.get("ModelAnimZiva2Info") in blocks:
+        ziva_model = load_ziva_model(source_path)
         channels.extend(dict(channel) for channel in ziva_model.sliders)
 
     unique = []
@@ -160,7 +160,7 @@ def _original_model_blendshape_channels(arm):
 class MODEL_OT_create_original_blendshape_names(Operator):
     bl_idname = "model.create_original_blendshape_names"
     bl_label = "Create Original Blendshape Names"
-    bl_description = "Read the original .model and create its named blendshapes as ordinary Blender shape keys on every mesh under this armature"
+    bl_description = "Read the original .model and create its named blendshapes as ordinary Blender shape keys on meshes using this armature"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -170,13 +170,11 @@ class MODEL_OT_create_original_blendshape_names(Operator):
             return {'CANCELLED'}
         meshes = [
             obj for obj in bpy.data.objects
-            if obj.type == 'MESH'
-            and obj.parent == arm
+            if is_model_mesh_for_armature(obj, arm)
             and len(obj.data.vertices)
-            and obj.get("engine_bounds_type", "") != "subset_aabb"
         ]
         if not meshes:
-            self.report({'ERROR'}, "Parent at least one custom mesh directly to the imported armature first.")
+            self.report({'ERROR'}, "Connect a custom mesh to the imported armature with parenting or an Armature modifier first.")
             return {'CANCELLED'}
         try:
             channels = _original_model_blendshape_channels(arm)
@@ -214,10 +212,10 @@ def _ziva_model_for_armature(arm, force=False):
 def _ziva_selected_meshes(context, arm):
     result = []
     for obj in list(getattr(context, "selected_objects", []) or []):
-        if obj.type == 'MESH' and obj.parent == arm and obj.get("engine_bounds_type", "") != "subset_aabb":
+        if is_model_mesh_for_armature(obj, arm):
             result.append(obj)
     active = getattr(context, "active_object", None)
-    if active and active.type == 'MESH' and active.parent == arm and active not in result:
+    if is_model_mesh_for_armature(active, arm) and active not in result:
         result.append(active)
     return result
 
@@ -281,7 +279,7 @@ class MODEL_OT_prepare_custom_ziva(Operator):
                 obj.engine_ziva_element_index = 0
         self.report(
             {'INFO'},
-            f"Custom Morph2 conversion enabled. Select parented meshes and transfer {len(model.sliders)} named channel(s).",
+            f"Custom Morph2 conversion enabled. Select rigged meshes and transfer {len(model.sliders)} named channel(s).",
         )
         return {'FINISHED'}
 
@@ -292,11 +290,11 @@ class _MODEL_OT_transfer_ziva_base:
     def execute(self, context):
         arm = _model_armature_from_context(context)
         if not arm:
-            self.report({'ERROR'}, "Select the imported armature or a parented replacement mesh.")
+            self.report({'ERROR'}, "Select the imported armature or a connected replacement mesh.")
             return {'CANCELLED'}
         objects = _ziva_selected_meshes(context, arm)
         if not objects:
-            self.report({'ERROR'}, "Select at least one nonempty mesh parented directly to the model armature.")
+            self.report({'ERROR'}, "Select at least one nonempty mesh connected to the model armature.")
             return {'CANCELLED'}
         try:
             model = _ziva_model_for_armature(arm)
@@ -358,11 +356,11 @@ class MODEL_OT_create_empty_ziva_targets(Operator):
     def execute(self, context):
         arm = _model_armature_from_context(context)
         if not arm:
-            self.report({'ERROR'}, "Select the imported armature or a parented replacement mesh.")
+            self.report({'ERROR'}, "Select the imported armature or a connected replacement mesh.")
             return {'CANCELLED'}
         objects = _ziva_selected_meshes(context, arm)
         if not objects:
-            self.report({'ERROR'}, "Select at least one mesh parented directly to the model armature.")
+            self.report({'ERROR'}, "Select at least one mesh connected to the model armature.")
             return {'CANCELLED'}
         try:
             model = _ziva_model_for_armature(arm)
@@ -411,11 +409,11 @@ class MODEL_OT_capture_ziva_pose(Operator):
     def execute(self, context):
         arm = _model_armature_from_context(context)
         if not arm:
-            self.report({'ERROR'}, "Select the imported armature or a parented replacement mesh.")
+            self.report({'ERROR'}, "Select the imported armature or a connected replacement mesh.")
             return {'CANCELLED'}
         objects = _ziva_selected_meshes(context, arm)
         if not objects:
-            self.report({'ERROR'}, "Select at least one mesh parented directly to the model armature.")
+            self.report({'ERROR'}, "Select at least one mesh connected to the model armature.")
             return {'CANCELLED'}
         try:
             model = _ziva_model_for_armature(arm)

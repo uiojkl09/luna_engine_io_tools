@@ -43,9 +43,7 @@ def sync_armature_morph_controls(arm):
     mesh_objects = sorted(
         (
             obj for obj in bpy.data.objects
-            if getattr(obj, "type", None) == 'MESH'
-            and getattr(obj, "parent", None) == arm
-            and obj.get("engine_bounds_type", "") != "subset_aabb"
+            if is_model_mesh_for_armature(obj, arm)
         ),
         key=lambda obj: (int(obj.get("engine_subset_index", 0) or 0), obj.name),
     )

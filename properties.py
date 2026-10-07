@@ -533,7 +533,7 @@ def _update_model_morph_preview(self, context):
         return
     value = float(getattr(self, "value", 0.0))
     for obj in bpy.data.objects:
-        if obj.type != 'MESH' or obj.parent != arm:
+        if not is_model_mesh_for_armature(obj, arm):
             continue
         shape_keys = getattr(obj.data, "shape_keys", None)
         key = shape_keys.key_blocks.get(target_name) if shape_keys else None

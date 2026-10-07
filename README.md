@@ -48,6 +48,9 @@ New meshes can be parented to the imported rig or connected through an Armature
 modifier. Export registers meshes without a saved subset ID in the active Model
 Look, so joining them to an original mesh is unnecessary. Use the Model Looks
 panel to change which meshes belong to each look.
+Shape-key setup and the armature preview sliders also work through an Armature
+modifier. **Create Original Blendshape Names** reads Morph2 or Ziva names from
+the imported source model; ordinary models without either have no names to copy.
 
 ### Importing animations
 
@@ -116,7 +119,7 @@ Clip replacement regression:
 `blender -b --factory-startup --python tests/blender_morph_clip_replacement.py`.
 Export edge cases:
 `blender -b --factory-startup --python tests/blender_animation_export_edges.py`.
-Custom mesh model export:
+Custom mesh model export, original shape names and preview controls:
 `blender -b --factory-startup --python tests/blender_custom_model_export.py`.
 These tests generate their own data and require no game assets or rendering.
 

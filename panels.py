@@ -338,7 +338,7 @@ def _draw_model_morph_panel(layout, context, arm):
     setup = layout.box()
     setup.label(text="Custom Mesh Blendshapes")
     setup.operator(MODEL_OT_create_original_blendshape_names.bl_idname, icon='SHAPEKEY_DATA')
-    setup.label(text="Creates the original model's names on every mesh child of this armature.")
+    setup.label(text="Creates the original model's names on meshes using this armature.")
 
     box = layout.box()
     header = box.row(align=True)
@@ -353,7 +353,7 @@ def _draw_model_morph_panel(layout, context, arm):
                 icon='FILE_REFRESH',
             )
         else:
-            box.label(text="Parent the custom meshes, then create the original blendshape names.")
+            box.label(text="Connect the custom meshes, then create the original blendshape names.")
         return
     box.prop(arm, "engine_model_morph_search", text="", icon='VIEWZOOM')
     search = str(getattr(arm, "engine_model_morph_search", "") or "").strip().casefold()
