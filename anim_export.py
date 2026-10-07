@@ -27,6 +27,61 @@ DAT1_BLOCK_ALIGN = 16
 STG_MAGIC = 0x00475453
 STG_VERSION = 0x1
 STG_HEADER_ALIGN = 16
+ANIM_SCALE_LOG_MAX = 12
+ANIM_POSE_INT_BYTES = 48
+ANIM_BASE_SCALE_BYTES = 32
+
+
+def get_anim_joint_flags(arm, joint_names):
+    """Recover native scale-inheritance flags, including rigs in older .blend files."""
+    source_flags = {}
+    path = str(arm.get("engine_model_source_path", "") or "")
+    if path and os.path.isfile(path):
+        data, blocks, _ = get_dat1_data(path)
+        if data and BLOCK_HASHES["ModelJoint"] in blocks:
+            joint_off, _ = blocks[BLOCK_HASHES["ModelJoint"]]
+            hierarchy_off, _ = blocks[BLOCK_HASHES["ModelJointHierarchy"]]
+            count = struct.unpack_from("<H", data, hierarchy_off + 2)[0]
+            for index in range(count):
+                ptr = joint_off + index * 16
+                flags = struct.unpack_from("<H", data, ptr + 6)[0]
+                name_offset = struct.unpack_from("<I", data, ptr + 12)[0]
+                name_start = ptr + name_offset
+                name_end = data.find(b"\x00", name_start)
+                name = data[name_start:name_end].decode("ascii", errors="replace")
+                source_flags[name] = flags
+    return [int(arm.data.bones[name].get("engine_joint_flags", source_flags.get(name, 0)))
+            if name in arm.data.bones else 0 for name in joint_names]
+
+
+def _compute_scale_log_scale(samples):
+    values = [float(component) for scale in samples for component in scale]
+    if any(not math.isfinite(value) or value < 0.0 for value in values):
+        raise ValueError("AnimClip bone scales must be finite and nonnegative.")
+    largest = max(values, default=1.0)
+    for shift in range(ANIM_SCALE_LOG_MAX, -1, -1):
+        if round(largest * (1 << shift)) <= 65535:
+            return shift
+    raise ValueError("AnimClip bone scale exceeds the supported fixed-point range.")
+
+
+def _pack_base_scale_groups(base_pose, scale_shifts):
+    joints = [j for j, pose in enumerate(base_pose)
+              if tuple(pose[:3]) != (1 << scale_shifts[j],) * 3]
+    records = []
+    for start in range(0, len(joints), 4):
+        group = joints[start:start + 4]
+        group += [group[-1]] * (4 - len(group))
+        values = []
+        for a, b in (group[:2], group[2:]):
+            values.extend((base_pose[a][0], base_pose[b][0],
+                           base_pose[a][1], base_pose[b][1],
+                           base_pose[a][2], base_pose[b][2],
+                           a * ANIM_POSE_INT_BYTES, b * ANIM_POSE_INT_BYTES))
+        if any(value < 0 or value > 65535 for value in values):
+            raise ValueError("AnimClip base scale or destination offset is out of range.")
+        records.append(struct.pack("<16H", *values))
+    return b"".join(records), len(records)
 
 def _skeletal_export_clear_flag_bits():
     return (
@@ -68,9 +123,11 @@ def _unsupported_skeletal_passthrough_block_names():
         "AnimClipPoseExpressionIdMap",
     )
 
-def _drop_unsupported_skeletal_passthrough_blocks(block_payload_by_hash):
+def _drop_unsupported_skeletal_passthrough_blocks(block_payload_by_hash, preserve_morph=False):
     dropped = []
     for block_name in _unsupported_skeletal_passthrough_block_names():
+        if preserve_morph and block_name in ("AnimClipMorphInfo", "AnimClipMorphFrameData"):
+            continue
         block_hash = BLOCK_HASHES.get(block_name)
         if block_hash in block_payload_by_hash:
             block_payload_by_hash.pop(block_hash, None)
@@ -121,14 +178,14 @@ def _patch_anim_clip_built_flags(payload, flags):
     struct.pack_into("<I", data, header_off + ANIM_CLIP_BUILT_FLAGS_OFFSET, int(flags) & U32_MASK)
     return bytes(data), ""
 
-def reconcile_export_blocks(block_payload_by_hash, clip_flags, sanitize_fn=None):
+def reconcile_export_blocks(block_payload_by_hash, clip_flags, sanitize_fn=None, morph_export=None):
     # `sanitize_fn` lets non-skeletal exporters (camera, etc.) keep their own
     # type bits. Default preserves legacy skeletal behavior.
     if sanitize_fn is None:
         sanitize_fn = _sanitize_skeletal_export_flags
     warnings = []
     errors = []
-    dropped_blocks = _drop_unsupported_skeletal_passthrough_blocks(block_payload_by_hash)
+    dropped_blocks = _drop_unsupported_skeletal_passthrough_blocks(block_payload_by_hash, preserve_morph=bool(morph_export))
     if dropped_blocks:
         warnings.append("Dropped unsupported anim-vert/curve/facial passthrough blocks from the rebuilt skeletal AnimClip.")
 
@@ -254,6 +311,11 @@ def reconcile_export_blocks(block_payload_by_hash, clip_flags, sanitize_fn=None)
     if built_payload is None:
         errors.append("AnimClipBuilt block is missing.")
     else:
+        if morph_export:
+            flags |= FLAG_HAS_ANIM_MORPH
+            built_payload = bytearray(built_payload)
+            built_payload[21] = ANIM_MORPH_VERT_TYPE
+            struct.pack_into("<H", built_payload, 50, len(morph_export["targets"]))
         patched_built, error = _patch_anim_clip_built_flags(built_payload, flags)
         if error:
             errors.append(error)
@@ -285,22 +347,44 @@ def _negate_quat(q):
     q.z = -q.z
     return q
 
-def _continuous_quat_loc_samples(all_locals, joint_count):
+def _continuous_quat_loc_samples(all_locals, joint_count, parent_map=None, joint_flags=None):
     prev_rots = [None] * joint_count
     samples = []
     for frame in all_locals:
-        row = []
-        for j, local_m in enumerate(frame):
-            loc, rot, _ = local_m.decompose()
+        row = [None] * joint_count
+        native_scales = [None] * joint_count
+        def resolve(j):
+            if row[j] is not None:
+                return
+            local_m = frame[j].copy()
+            parent = parent_map[j] if parent_map is not None else -1
+            if parent != -1 and joint_flags is not None and (joint_flags[j] & 1):
+                resolve(parent)
+                parent_scale = native_scales[parent]
+                if min(parent_scale) <= 0.0:
+                    raise ValueError("A scale-compensated joint cannot have a zero-scale parent.")
+                # Runtime removes the parent's stored local scale before rotation.
+                # Bake its inverse operation into the child's native local TRS.
+                for axis in range(3):
+                    for col in range(3):
+                        local_m[axis][col] *= parent_scale[axis]
+            loc, rot, scale = local_m.decompose()
+            rebuilt = mathutils.Matrix.LocRotScale(loc, rot, scale)
+            error = max(abs(rebuilt[r][c] - local_m[r][c]) for r in range(3) for c in range(3))
+            if error > 1e-4:
+                raise ValueError("Bone scaling produces shear that cannot be stored as AnimClip TRS.")
             rot.normalize()
             if prev_rots[j] is not None and _quat_dot(prev_rots[j], rot) < 0.0:
                 _negate_quat(rot)
             prev_rots[j] = rot.copy()
-            row.append((loc.copy(), rot.copy()))
+            native_scales[j] = scale.copy()
+            row[j] = (loc.copy(), rot.copy(), scale.copy())
+        for j in range(joint_count):
+            resolve(j)
         samples.append(row)
     return samples
 
-def _quantize_quat_trans_values(loc, rot, trans_shift):
+def _quantize_quat_trans_values(loc, rot, trans_shift, scale=None, scale_shift=ANIM_SCALE_LOG_MAX):
     qx = int(round(rot.x * QUAT_PACK_SCALE))
     qy = int(round(rot.y * QUAT_PACK_SCALE))
     qz = int(round(rot.z * QUAT_PACK_SCALE))
@@ -314,16 +398,17 @@ def _quantize_quat_trans_values(loc, rot, trans_shift):
     def clamp_i16(v):
         return max(I16_MIN, min(I16_MAX, v))
 
+    scales = tuple(int(round(float(s) * (1 << scale_shift))) for s in (scale if scale is not None else (1, 1, 1)))
     return (
-        0, 0, 0, 0,
+        *scales, 1 << scale_shift,
         clamp_i16(qx), clamp_i16(qy), clamp_i16(qz), clamp_i16(qw),
         clamp_i16(tx), clamp_i16(ty), clamp_i16(tz), trans_shift,
     )
 
 def _quantize_quat_trans(local_m, trans_shift):
-    loc, rot, _ = local_m.decompose()
+    loc, rot, scale = local_m.decompose()
     rot.normalize()
-    return _quantize_quat_trans_values(loc, rot, trans_shift)
+    return _quantize_quat_trans_values(loc, rot, trans_shift, scale)
 
 def _compute_frame_engine_locals(arm, joint_names, parent_map, frame):
     bpy.context.scene.frame_set(frame)
@@ -475,7 +560,12 @@ class ExportEngineAnim(Operator, ExportHelper):
         arm = _resolve_anim_armature(context)
         if arm and getattr(arm, "type", None) == 'ARMATURE':
             if not arm.animation_data or not arm.animation_data.action:
-                return None, f"'{arm.name}' has no active action. Assign an action before exporting."
+                try:
+                    has_morph_animation = armature_has_morph_animation(arm)
+                except ValueError as exc:
+                    return None, str(exc)
+                if not has_morph_animation:
+                    return None, f"'{arm.name}' has no active rig action or animated shape keys. Assign an action before exporting."
             return 'armature', arm
 
         camera = _resolve_anim_camera(context)
@@ -568,18 +658,34 @@ class ExportEngineAnim(Operator, ExportHelper):
                 parent_map[i] = name_to_idx[pb.parent.name]
 
         all_locals = []
+        morph_samples = []
+        try:
+            morph_targets = collect_anim_morph_targets(arm)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            scene.frame_set(original_frame)
+            return {'CANCELLED'}
 
-        for fi in range(sample_cnt):
-            if fi % max(1, sample_cnt // 50) == 0:
-                context.window_manager.progress_update(int(25 * fi / sample_cnt))
-            all_locals.append(_compute_frame_engine_locals(arm, joint_names, parent_map, frame_start + fi))
-        continuous_samples = _continuous_quat_loc_samples(all_locals, joint_count)
+        try:
+            for fi in range(sample_cnt):
+                if fi % max(1, sample_cnt // 50) == 0:
+                    context.window_manager.progress_update(int(25 * fi / sample_cnt))
+                all_locals.append(_compute_frame_engine_locals(arm, joint_names, parent_map, frame_start + fi))
+                morph_samples.append(sample_anim_morph_values(morph_targets))
+            joint_flags = get_anim_joint_flags(arm, joint_names)
+            continuous_samples = _continuous_quat_loc_samples(all_locals, joint_count, parent_map, joint_flags)
+            per_joint_scale_shift = [_compute_scale_log_scale([frame[j][2] for frame in continuous_samples])
+                                     for j in range(joint_count)]
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            scene.frame_set(original_frame)
+            return {'CANCELLED'}
 
         per_joint_trans_shift = []
         for j in range(joint_count):
             max_abs = 0.0
             for fi in range(sample_cnt):
-                loc, _ = continuous_samples[fi][j]
+                loc, _, _ = continuous_samples[fi][j]
                 m = max(abs(loc.x), abs(loc.y), abs(loc.z))
                 if m > max_abs:
                     max_abs = m
@@ -591,8 +697,8 @@ class ExportEngineAnim(Operator, ExportHelper):
                 context.window_manager.progress_update(25 + int(25 * fi / sample_cnt))
             row = []
             for j in range(joint_count):
-                loc, rot = continuous_samples[fi][j]
-                row.append(_quantize_quat_trans_values(loc, rot, per_joint_trans_shift[j]))
+                loc, rot, scale = continuous_samples[fi][j]
+                row.append(_quantize_quat_trans_values(loc, rot, per_joint_trans_shift[j], scale, per_joint_scale_shift[j]))
             frame_values.append(row)
 
         base_pose = [[0] * JOINT_PACKED_COMPONENT_COUNT for _ in range(joint_count)]
@@ -605,7 +711,13 @@ class ExportEngineAnim(Operator, ExportHelper):
                 base_pose[j][c] = mn
                 max_delta[j][c] = mx - mn
 
-        ANIMATED_SLOTS = (4, 5, 6, 7, 8, 9, 10)
+        ANIMATED_SLOTS = (0, 1, 2, 4, 5, 6, 7, 8, 9, 10)
+        try:
+            base_scales, base_scale_count = _pack_base_scale_groups(base_pose, per_joint_scale_shift)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            scene.frame_set(original_frame)
+            return {'CANCELLED'}
         elem_table = []
         large_table = []
         for j in range(joint_count):
@@ -712,6 +824,17 @@ class ExportEngineAnim(Operator, ExportHelper):
         duration = _duration_from_sample_timing(clip_sample_count_for_timing, clip_fps_for_timing, want_looping)
 
         clip_name = os.path.splitext(os.path.basename(self.filepath))[0]
+        morph_export = None
+        strings_data = b""
+        try:
+            clip_name_bytes = clip_name.encode("ascii") + b"\x00"
+            morph_export = encode_anim_morph(morph_targets, morph_samples, name_offset_base=len(clip_name_bytes))
+            if morph_export:
+                strings_data = clip_name_bytes + morph_export["strings"]
+        except (ValueError, UnicodeError, OverflowError) as exc:
+            self.report({'ERROR'}, f"Shape-key animation export failed: {exc}")
+            scene.frame_set(original_frame)
+            return {'CANCELLED'}
         stored_name_hash = arm.get("engine_clip_name_hash")
         if use_original_values and stored_name_hash is not None:
             clip_name_hash = int(stored_name_hash) & U32_MASK
@@ -748,7 +871,7 @@ class ExportEngineAnim(Operator, ExportHelper):
 
             stride,
 
-            0,
+            base_scale_count,
 
             0,
 
@@ -784,7 +907,6 @@ class ExportEngineAnim(Operator, ExportHelper):
         anim_clip_built = header
         assert len(anim_clip_built) == 96, f"Header size wrong: {len(anim_clip_built)}"
 
-        SCALE_LOG_DEFAULT = 12
         base_state_parts = []
         for j in range(joint_count):
             bp = base_pose[j]
@@ -792,10 +914,10 @@ class ExportEngineAnim(Operator, ExportHelper):
                 "<hhhhhhhBB",
                 bp[4], bp[5], bp[6], bp[7],
                 bp[8], bp[9], bp[10],
-                SCALE_LOG_DEFAULT,
+                per_joint_scale_shift[j],
                 per_joint_trans_shift[j],
             ))
-        anim_clip_base_state = b''.join(base_state_parts)
+        anim_clip_base_state = b''.join(base_state_parts) + base_scales
 
         elem_offs_bytes = b''.join(struct.pack("<I", (j * JOINT_PACKED_COMPONENT_COUNT + c) * SAMPLE_ELEM_OFFSET_STRIDE) for j, c, _ in elem_table)
         elem_strs_bytes = bytes(((b - 1) & 0xF) for _, _, b in elem_table)
@@ -917,9 +1039,12 @@ class ExportEngineAnim(Operator, ExportHelper):
         block_payload_by_hash = {}
         for block_hash, payload in out_blocks:
             block_payload_by_hash[block_hash] = payload
+        if morph_export:
+            block_payload_by_hash[BLOCK_HASHES["AnimClipMorphInfo"]] = morph_export["info"]
+            block_payload_by_hash[BLOCK_HASHES["AnimClipMorphFrameData"]] = morph_export["frame_data"]
         sanitize_fn = None
         clip_flags, export_warnings, export_errors = reconcile_export_blocks(
-            block_payload_by_hash, clip_flags, sanitize_fn=sanitize_fn
+            block_payload_by_hash, clip_flags, sanitize_fn=sanitize_fn, morph_export=morph_export
         )
         for warning in export_warnings:
             self.report({'WARNING'}, warning)
@@ -943,9 +1068,9 @@ class ExportEngineAnim(Operator, ExportHelper):
         )
 
         block_offsets = []
-        cursor = dat1_header_size
+        cursor = dat1_header_size + len(strings_data)
 
-        block_payload_parts = []
+        block_payload_parts = [strings_data] if strings_data else []
         for _, payload in blocks:
             aligned = (cursor + DAT1_BLOCK_ALIGN - 1) & ~(DAT1_BLOCK_ALIGN - 1)
             pad = aligned - cursor
@@ -1015,6 +1140,6 @@ class ExportEngineAnim(Operator, ExportHelper):
         format_name = "STG+DAT1" if add_stg_header else "raw DAT1"
         self.report(
             {'INFO'},
-            f"Wrote {format_name}: {sample_cnt} frames, {joint_count} joints, {len(elem_table)} elems / {len(large_table)} large, stride={stride}B"
+            f"Wrote {format_name}: {sample_cnt} frames, {joint_count} joints, {len(morph_export['targets']) if morph_export else 0} morph targets, {len(elem_table)} elems / {len(large_table)} large, stride={stride}B"
         )
         return {'FINISHED'}

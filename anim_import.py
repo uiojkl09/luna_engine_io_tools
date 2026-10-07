@@ -18,6 +18,8 @@ CLIP_BUILT_PARTICLE_COUNT_MAX_INDEX = 29
 CLIP_BUILT_JOINT_COUNT_INDEX = 11
 CLIP_BUILT_ELEM_COUNT_INDEX = 13
 CLIP_BUILT_STRIDE_INDEX = 14
+CLIP_BUILT_BASE_SCALE_COUNT_INDEX = 15
+CLIP_BUILT_BASE_WEIGHT_COUNT_INDEX = 16
 CLIP_BUILT_LARGE_ELEM_COUNT_INDEX = 26
 DEFAULT_IMPORT_FPS = 30.0
 JOINT_PACKED_COMPONENT_COUNT = 12
@@ -155,6 +157,8 @@ class ImportEngineAnim(Operator, ImportHelper):
         elem_count = cb[CLIP_BUILT_ELEM_COUNT_INDEX]
         stride = cb[CLIP_BUILT_STRIDE_INDEX]
         elem_large_count = cb[CLIP_BUILT_LARGE_ELEM_COUNT_INDEX]
+        base_scale_count = cb[CLIP_BUILT_BASE_SCALE_COUNT_INDEX]
+        base_weight_count = cb[CLIP_BUILT_BASE_WEIGHT_COUNT_INDEX]
 
         if looks_like_camera_animclip(data, blocks, table_end, cb):
             if not (clip_flags & FLAG_CAMERA):
@@ -242,7 +246,7 @@ class ImportEngineAnim(Operator, ImportHelper):
             return {'CANCELLED'}
 
         base_off, base_size = blocks[BLOCK_HASHES["AnimClipBaseState"]]
-        base_size_required = joint_count * ANIM_JOINT_BASE_STATE_SIZE
+        base_size_required = joint_count * ANIM_JOINT_BASE_STATE_SIZE + base_scale_count * 32 + base_weight_count * 4
         if base_size < base_size_required:
             self.report({'ERROR'}, f"AnimClipBaseState is truncated: {base_size} bytes, expected {base_size_required}.")
             return {'CANCELLED'}
@@ -260,6 +264,23 @@ class ImportEngineAnim(Operator, ImportHelper):
             jh_size_required = joint_count * U32_FIELD_BYTES
             if jh_size < jh_size_required:
                 self.report({'ERROR'}, f"AnimClipJointHashes is truncated: {jh_size} bytes, expected {jh_size_required}.")
+                return {'CANCELLED'}
+        morph_animation = None
+        if cb[6] == ANIM_MORPH_VERT_TYPE:
+            try:
+                info_off, info_size = blocks[BLOCK_HASHES["AnimClipMorphInfo"]]
+                morph_off, morph_size = blocks[BLOCK_HASHES["AnimClipMorphFrameData"]]
+                string_end = min(offset for offset, size in blocks.values())
+                morph_animation = decode_anim_morph(
+                    data[info_off:info_off + info_size],
+                    data[morph_off:morph_off + morph_size],
+                    clip_sample_cnt_full,
+                    strings=data[table_end:string_end],
+                )
+                if len(morph_animation["targets"]) != int(cb[18]):
+                    raise ValueError("AnimClipBuilt and MorphInfo target counts differ.")
+            except (KeyError, ValueError, UnicodeError, struct.error) as exc:
+                self.report({'ERROR'}, f"Invalid morph animation: {exc}")
                 return {'CANCELLED'}
         
         self.report({'INFO'}, f"Animation: {sample_cnt} {sample_source} samples @ {anim_fps:.2f} FPS (Dur: {anim_duration:.2f}s)")
@@ -371,6 +392,21 @@ class ImportEngineAnim(Operator, ImportHelper):
             base_poses_scale[i] = [1 << ls, 1 << ls, 1 << ls, 1 << ls]
             base_poses_quat[i] = [base_raw[b], base_raw[b+1], base_raw[b+2], base_raw[b+3]]
             base_poses_trans[i] = [base_raw[b+4], base_raw[b+5], base_raw[b+6], lt]
+
+        for group in range(base_scale_count):
+            ptr = base_off + joint_count * ANIM_JOINT_BASE_STATE_SIZE + group * 32
+            packed = struct.unpack_from("<16H", data, ptr)
+            for slot in (0, 8):
+                for sub in (0, 1):
+                    dest = packed[slot + 6 + sub]
+                    if dest % 48 or dest // 48 >= ((joint_count + 3) & ~3):
+                        self.report({'ERROR'}, "AnimClip base scale references an invalid joint.")
+                        return {'CANCELLED'}
+                    ji = dest // 48
+                    if ji >= joint_count:
+                        continue
+                    base_poses_scale[ji][:3] = [packed[slot + sub], packed[slot + 2 + sub], packed[slot + 4 + sub]]
+        joint_flags = get_anim_joint_flags(arm, joint_names)
 
         wm.progress_update(5)
 
@@ -502,6 +538,8 @@ class ImportEngineAnim(Operator, ImportHelper):
             BLOCK_HASHES["AnimClipSampleDataResident"],
             BLOCK_HASHES["AnimClipSampleDataPaged"],
             BLOCK_HASHES["AnimClipJointHashes"],
+            BLOCK_HASHES["AnimClipMorphInfo"],
+            BLOCK_HASHES["AnimClipMorphFrameData"],
         }
         for b_hash, (b_off, b_size) in blocks.items():
             if b_hash not in handled_hashes:
@@ -664,6 +702,13 @@ class ImportEngineAnim(Operator, ImportHelper):
                 sm = Diagonal((cs[0] / s_div, cs[1] / s_div, cs[2] / s_div, 1.0))
                 local_m = loc @ qm @ sm
                 p = parent_map[i]
+                if p != -1 and (joint_flags[i] & 1):
+                    ps = curr_scale[p]
+                    if min(ps[:3]) <= 0:
+                        self.report({'ERROR'}, "Scale compensation requires a nonzero parent scale.")
+                        return {'CANCELLED'}
+                    compensate = Diagonal((ps[3]/ps[0], ps[3]/ps[1], ps[3]/ps[2], 1.0))
+                    local_m = loc @ compensate @ qm @ sm
                 if p == -1:
                     frame_global[i] = SWZ @ local_m
                 else:
@@ -685,6 +730,12 @@ class ImportEngineAnim(Operator, ImportHelper):
                             kloc = Translation((kct[0]/kt_div, kct[1]/kt_div, kct[2]/kt_div))
                             kq = Quaternion((kcq[3], kcq[0], kcq[1], kcq[2])); kq.normalize()
                             klm = kloc @ kq.to_matrix().to_4x4() @ Diagonal((kcs[0]/ks_div, kcs[1]/ks_div, kcs[2]/ks_div, 1.0))
+                            if kp != -1 and (joint_flags[k] & 1):
+                                ps = curr_scale[kp]
+                                if min(ps[:3]) <= 0:
+                                    self.report({'ERROR'}, "Scale compensation requires a nonzero parent scale.")
+                                    return {'CANCELLED'}
+                                klm = kloc @ Diagonal((ps[3]/ps[0], ps[3]/ps[1], ps[3]/ps[2], 1.0)) @ kq.to_matrix().to_4x4() @ Diagonal((kcs[0]/ks_div, kcs[1]/ks_div, kcs[2]/ks_div, 1.0))
                             if kp == -1:
                                 frame_global[k] = SWZ @ klm
                             else:
@@ -765,6 +816,19 @@ class ImportEngineAnim(Operator, ImportHelper):
                 fc.keyframe_points.foreach_set("co", co)
                 fc.update()
 
+        morph_count = 0
+        if morph_animation:
+            try:
+                morph_count, missing, shape_actions = import_anim_morph_keys(
+                    arm, morph_animation, clip_fps_full,
+                    os.path.splitext(os.path.basename(filepath))[0], frame_rate=anim_fps,
+                )
+            except ValueError as exc:
+                self.report({'ERROR'}, f"Shape-key animation import failed: {exc}")
+                return {'CANCELLED'}
+            if missing:
+                self.report({'WARNING'}, "Morph targets missing from the selected model: " + ", ".join(missing[:8]) + ". Import the matching model with Import Shape Keys enabled.")
+        context.scene.frame_set(0)
         wm.progress_update(100)
-        self.report({'INFO'}, f"Imported {sample_cnt} frames for {len(valid_bones)} bones")
+        self.report({'INFO'}, f"Imported {sample_cnt} frames for {len(valid_bones)} bones and {morph_count} shape-key tracks")
         return {'FINISHED'}

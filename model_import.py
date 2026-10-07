@@ -655,6 +655,7 @@ class ImportEngineModel(Operator, ImportHelper):
         for i, joint in enumerate(joints):
             arm.data.bones[joint['blender_name']]["engine_joint_index"] = i
             arm.data.bones[joint['blender_name']]["engine_joint_name"] = joint['name']
+            arm.data.bones[joint['blender_name']]["engine_joint_flags"] = struct.unpack_from("<H", data, j_off + i * MODEL_JOINT_RECORD_SIZE + 6)[0]
         arm["engine_mpu"] = mpu
         arm["engine_model_static"] = not has_skeleton
         _store_model_metadata(

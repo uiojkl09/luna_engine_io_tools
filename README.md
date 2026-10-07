@@ -10,6 +10,8 @@
 * **Ziva replacement tools**: Evaluate compiled Ziva2 rigs, transfer named channels to replacement topology, and capture joint-driven poses as editable Morph2 targets.
 * **Animation import**: Import `.animclip` files and apply them to an existing armature or camera.
 * **Animation export**: Export the selected armature or camera animation as an `.animclip` file.
+* **Bone scale animation**: Preserve constant and animated bone scale, including native segment scale compensation.
+* **Shape-key animation**: Export keyframed shape-key values as native morph-weight tracks alongside skeletal animation, and import those tracks back onto matching model targets.
 * **Camera animation support**: Work with camera clips as well as skeletal animation clips.
 * **Blender UI integration**: Adds Luna Engine import/export entries to Blender's File menu and provides panels, properties, and operators for model and animation settings.
 * **Pure Python add-on**: Runs inside Blender's bundled Python environment with no extra Python packages required.
@@ -51,10 +53,36 @@ You can also copy the `luna_engine_io_tools` folder into Blender's add-ons direc
 
 ### Exporting animations
 
-1. Select an armature with an active action or a camera with animation data.
+1. Select an armature with an active action or animated mesh shape keys, or a camera with animation data.
 2. Go to **File > Export > Luna Engine Anim**.
 3. Set the desired frame range and FPS in the scene/export settings.
 4. Export the animation as an `.animclip` file.
+
+### Animating shape keys
+
+Use relative shape keys with **Relative To** set to **Basis**, and keyframe their
+**Value** normally. Select the rig and export the AnimClip using the same frame
+range and FPS as the bone animation. Export the model too: its Morph2 targets
+contain the shape geometry, while the AnimClip contains the weights over time.
+The model and animation target names/hashes must match.
+
+Shape keys are detected on meshes parented to the rig or using its Armature
+modifier. Shape-key-only clips do not require an active bone action. When
+importing, load the matching model with **Import Shape Keys** enabled first.
+Morph tracks are recreated as ordinary shape-key actions on the meshes.
+
+The exporter supports up to 255 active morph targets and omits all-zero tracks.
+Keys sharing an engine target name across meshes must have matching values;
+rename keys that should animate independently. Absolute shape keys, custom
+relative-key chains, and shape-key vertex-group masks are not supported.
+Imported target metadata follows the model exporter's target selection.
+Facial phoneme/expression and Ziva animation are separate systems.
+
+Bone scales must be finite and nonnegative. Native segment scale compensation
+is preserved through imported joint flags; rigs loaded with an older add-on
+can recover those flags from the original model's saved source path. Negative
+scale, unsupported shear, and zero parent scale on compensated joints produce
+an export error instead of silently changing the animation.
 
 ## Supported file types
 
@@ -72,6 +100,11 @@ You can also copy the `luna_engine_io_tools` folder into Blender's add-ons direc
 ## Development
 
 This project is written in pure Python. After editing the add-on, reload it in Blender or restart Blender to test changes. Keep changes focused, test with real assets when possible, and report issues with enough detail to reproduce them.
+
+Animation format tests: `python -m unittest discover -s tests`.
+Synthetic Blender round trip:
+`blender -b --factory-startup --python tests/blender_animation_roundtrip.py`.
+These tests generate their own data and require no game assets or rendering.
 
 ## License
 

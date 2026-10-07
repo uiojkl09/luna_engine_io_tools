@@ -24,6 +24,7 @@ _MODULE_NAMES = (
     "events",
     "model_ziva",
     "model_morph",
+    "anim_morph",
     "model_hair",
     "model_import",
     "model_export",

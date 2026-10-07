@@ -4,6 +4,7 @@ from .utils import bpy
 from . import (
     anim_export,
     anim_import,
+    anim_morph,
     binary,
     camera_anim,
     constants,
@@ -38,6 +39,7 @@ _LOGIC_MODULES = (
     events,
     model_import,
     model_morph,
+    anim_morph,
     model_ziva,
     model_hair,
     model_export,
