@@ -828,6 +828,8 @@ class ImportEngineAnim(Operator, ImportHelper):
                 return {'CANCELLED'}
             if missing:
                 self.report({'WARNING'}, "Morph targets missing from the selected model: " + ", ".join(missing[:8]) + ". Import the matching model with Import Shape Keys enabled.")
+        else:
+            clear_imported_anim_morph_keys(arm)
         context.scene.frame_set(0)
         wm.progress_update(100)
         self.report({'INFO'}, f"Imported {sample_cnt} frames for {len(valid_bones)} bones and {morph_count} shape-key tracks")

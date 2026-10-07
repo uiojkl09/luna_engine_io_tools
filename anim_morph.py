@@ -238,9 +238,34 @@ def sample_anim_morph_values(targets):
     return row
 
 
+def clear_imported_anim_morph_keys(arm):
+    """Replace previous imported morph tracks without clearing authored actions."""
+    seen = set()
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH':
+            continue
+        belongs = obj.parent == arm or any(mod.type == 'ARMATURE' and mod.object == arm for mod in obj.modifiers)
+        if not belongs:
+            continue
+        keys = obj.data.shape_keys
+        if keys is None or keys in seen:
+            continue
+        seen.add(keys)
+        anim = keys.animation_data
+        action = anim.action if anim else None
+        if action is None or "engine_morph_sample_fps" not in action:
+            continue
+        paths = {curve.data_path for curve in _iter_obj_action_fcurves(keys, action)}
+        anim.action = None
+        for key in list(keys.key_blocks)[1:]:
+            if key.path_from_id("value") in paths:
+                key.value = 0.0
+
+
 def import_anim_morph_keys(arm, morph, fps, clip_name, frame_rate=None):
     """Give each mesh Key datablock its own Blender action (standard workflow)."""
     existing = {target["hash"]: target for target in collect_anim_morph_targets(arm)}
+    clear_imported_anim_morph_keys(arm)
     actions = {}
     missing = []
     rows = morph["samples"]

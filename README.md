@@ -70,6 +70,9 @@ Shape keys are detected on meshes parented to the rig or using its Armature
 modifier. Shape-key-only clips do not require an active bone action. When
 importing, load the matching model with **Import Shape Keys** enabled first.
 Morph tracks are recreated as ordinary shape-key actions on the meshes.
+Loading another clip replaces previous imported morph actions and resets their
+values, including when the new clip has no morph tracks. Authored shape-key
+actions are left alone on meshes with no incoming morph tracks.
 
 The exporter supports up to 255 active morph targets and omits all-zero tracks.
 Keys sharing an engine target name across meshes must have matching values;
@@ -104,6 +107,8 @@ This project is written in pure Python. After editing the add-on, reload it in B
 Animation format tests: `python -m unittest discover -s tests`.
 Synthetic Blender round trip:
 `blender -b --factory-startup --python tests/blender_animation_roundtrip.py`.
+Clip replacement regression:
+`blender -b --factory-startup --python tests/blender_morph_clip_replacement.py`.
 These tests generate their own data and require no game assets or rendering.
 
 ## License
