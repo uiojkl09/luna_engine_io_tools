@@ -410,6 +410,13 @@ def _quantize_quat_trans(local_m, trans_shift):
     rot.normalize()
     return _quantize_quat_trans_values(loc, rot, trans_shift, scale)
 
+def _validate_compensated_scale_samples(frame_values, parent_map, joint_flags):
+    # The engine divides by the stored parent scale, after fixed-point rounding.
+    for j, parent in enumerate(parent_map):
+        if parent != -1 and (joint_flags[j] & 1):
+            if any(min(frame[parent][:3]) <= 0 for frame in frame_values):
+                raise ValueError("A scale-compensated joint's parent scale rounds to zero in AnimClip fixed-point storage.")
+
 def _compute_frame_engine_locals(arm, joint_names, parent_map, frame):
     bpy.context.scene.frame_set(frame)
     n = len(joint_names)
@@ -713,6 +720,7 @@ class ExportEngineAnim(Operator, ExportHelper):
 
         ANIMATED_SLOTS = (0, 1, 2, 4, 5, 6, 7, 8, 9, 10)
         try:
+            _validate_compensated_scale_samples(frame_values, parent_map, joint_flags)
             base_scales, base_scale_count = _pack_base_scale_groups(base_pose, per_joint_scale_shift)
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
@@ -827,7 +835,7 @@ class ExportEngineAnim(Operator, ExportHelper):
         morph_export = None
         strings_data = b""
         try:
-            clip_name_bytes = clip_name.encode("ascii") + b"\x00"
+            clip_name_bytes = clip_name.encode("utf-8") + b"\x00"
             morph_export = encode_anim_morph(morph_targets, morph_samples, name_offset_base=len(clip_name_bytes))
             if morph_export:
                 strings_data = clip_name_bytes + morph_export["strings"]

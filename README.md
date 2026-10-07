@@ -84,8 +84,8 @@ Facial phoneme/expression and Ziva animation are separate systems.
 Bone scales must be finite and nonnegative. Native segment scale compensation
 is preserved through imported joint flags; rigs loaded with an older add-on
 can recover those flags from the original model's saved source path. Negative
-scale, unsupported shear, and zero parent scale on compensated joints produce
-an export error instead of silently changing the animation.
+scale, unsupported shear, and parent scales that are zero or round to zero on
+compensated joints produce an export error instead of changing the animation.
 
 ## Supported file types
 
@@ -109,6 +109,8 @@ Synthetic Blender round trip:
 `blender -b --factory-startup --python tests/blender_animation_roundtrip.py`.
 Clip replacement regression:
 `blender -b --factory-startup --python tests/blender_morph_clip_replacement.py`.
+Export edge cases:
+`blender -b --factory-startup --python tests/blender_animation_export_edges.py`.
 These tests generate their own data and require no game assets or rendering.
 
 ## License

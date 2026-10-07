@@ -75,6 +75,16 @@ class MorphTrackTests(unittest.TestCase):
 
 
 class BoneScaleTests(unittest.TestCase):
+    def test_compensated_parent_scale_after_quantization(self):
+        frames = [[[4096, 4096, 4096], [4096, 4096, 4096]],
+                  [[4096, 0, 4096], [4096, 4096, 4096]]]
+        with self.assertRaisesRegex(ValueError, "rounds to zero"):
+            export._validate_compensated_scale_samples(frames, [-1, 0], [0, 0x81])
+        # Zero is valid when there is no runtime division by this parent scale.
+        export._validate_compensated_scale_samples(frames, [-1, 0], [0, 0x80])
+        frames[1][0][1] = 1
+        export._validate_compensated_scale_samples(frames, [-1, 0], [0, 0x81])
+
     def test_fixed_point_range(self):
         self.assertEqual(export._compute_scale_log_scale([(1, 1, 1)]), 12)
         self.assertLess(export._compute_scale_log_scale([(100, 1, 1)]), 12)
