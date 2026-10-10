@@ -1,0 +1,37 @@
+name: Custom rig regression tests
+on:
+  push:
+    branches: [feature/custom-rig-export]
+    paths: ['.github/workflows/custom-rig-tests.yml']
+permissions:
+  contents: read
+jobs:
+  blender:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender runtime dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libxrender1 libxi6 libxfixes3 libxkbcommon0 libsm6 libgl1
+      - name: Fetch official Blender 5.0.1
+        run: |
+          curl -fL --retry 2 https://download.blender.org/release/Blender5.0/blender-5.0.1-linux-x64.tar.xz -o blender-5.0.1-linux-x64.tar.xz
+          curl -fL --retry 2 https://download.blender.org/release/Blender5.0/blender-5.0.1.sha256 -o blender.sha256
+          grep 'blender-5.0.1-linux-x64.tar.xz' blender.sha256 | sha256sum --check
+          tar -xf blender-5.0.1-linux-x64.tar.xz
+      - name: Run existing Blender regression tests
+        run: |
+          set -o pipefail
+          for test in tests/blender_animation_roundtrip.py tests/blender_animation_export_edges.py tests/blender_morph_clip_replacement.py tests/blender_custom_model_export.py; do
+            ./blender-5.0.1-linux-x64/blender -b --factory-startup --python-exit-code 1 --python "$test"
+          done
+      - name: Preserve test runtime for local private-asset validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5.0.1-validation-runtime
+          path: |
+            blender-5.0.1-linux-x64.tar.xz
+            blender.sha256
+          compression-level: 0
+          retention-days: 1
